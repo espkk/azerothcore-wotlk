@@ -759,7 +759,7 @@ void WorldSession::LogoutPlayer(bool save)
         //! Call script hook before deletion
         sScriptMgr->OnPlayerLogout(_player);
 
-        METRIC_EVENT("player_events", "Logout", _player->GetName());
+        METRIC_EVENT_VALUES("player_events", "Logout", METRIC_FIELDS(METRIC_FIELD("player", _player->GetName())));
 
         LOG_INFO("entities.player", "Account: {} (IP: {}) Logout Character:[{}] ({}) Level: {}",
             GetAccountId(), GetRemoteAddress(), _player->GetName(), _player->GetGUID().ToString(), _player->GetLevel());

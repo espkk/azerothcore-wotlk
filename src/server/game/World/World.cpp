@@ -1042,7 +1042,11 @@ void World::SetInitialWorldSettings()
     LOG_INFO("server.loading", "WORLD: World Initialized In {} Minutes {} Seconds", (startupDuration / 60000), ((startupDuration % 60000) / 1000)); // outError for red color in console
     LOG_INFO("server.loading", " ");
 
-    METRIC_EVENT("events", "World initialized", "World Initialized In " + std::to_string(startupDuration / 60000) + " Minutes " + std::to_string((startupDuration % 60000) / 1000) + " Seconds");
+    METRIC_EVENT_VALUES("world_events", "World initialized",
+        METRIC_FIELDS(
+            METRIC_FIELD("duration_ms", startupDuration),
+            METRIC_FIELD("duration_minutes", startupDuration / 60000),
+            METRIC_FIELD("duration_seconds", (startupDuration % 60000) / 1000)));
 
     if (sConfigMgr->isDryRun())
     {

@@ -411,8 +411,12 @@ namespace VMAP
             iLoadedTiles[packTileID(tileX, tileY)] = false;
         }
 
-        METRIC_EVENT("map_events", "LoadMapTile",
-            "Map: " + std::to_string(iMapID) + " TileX: " + std::to_string(tileX) + " TileY: " + std::to_string(tileY));
+        METRIC_EVENT_VALUES("map_events", "LoadMapTile",
+            METRIC_FIELDS(
+                METRIC_FIELD("map_id", iMapID),
+                METRIC_FIELD("tile_x", tileX),
+                METRIC_FIELD("tile_y", tileY),
+                METRIC_FIELD("result", result)));
 
         return result;
     }
@@ -430,8 +434,11 @@ namespace VMAP
         }
         iLoadedTiles.erase(tile);
 
-        METRIC_EVENT("map_events", "UnloadMapTile",
-            "Map: " + std::to_string(iMapID) + " TileX: " + std::to_string(tileX) + " TileY: " + std::to_string(tileY));
+        METRIC_EVENT_VALUES("map_events", "UnloadMapTile",
+            METRIC_FIELDS(
+                METRIC_FIELD("map_id", iMapID),
+                METRIC_FIELD("tile_x", tileX),
+                METRIC_FIELD("tile_y", tileY)));
     }
 
     void StaticMapTree::GetModelInstances(ModelInstance*& models, uint32& count)

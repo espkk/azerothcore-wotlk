@@ -134,7 +134,7 @@ void WorldSessionMgr::UpdateSessions(uint32 const diff)
         }
 
         [[maybe_unused]] uint32 currentSessionId = itr->first;
-        METRIC_DETAILED_TIMER("world_update_sessions_time", METRIC_TAG("account_id", std::to_string(currentSessionId)));
+        METRIC_DETAILED_TIMER("world_update_sessions_time", METRIC_VALUE("account_id", std::to_string(currentSessionId)));
 
         if (!pSession->Update(diff, updater))
         {

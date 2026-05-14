@@ -1,0 +1,94 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 23,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2026-x64-debug-vcpkg",
+      "displayName": "VS 2026 x64 Debug (vcpkg)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "C:/workspace/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      },
+      "environment": {
+        "VCPKG_ROOT": "C:/workspace/vcpkg"
+      }
+    },
+    {
+      "name": "vs2026-x64-release-vcpkg",
+      "displayName": "VS 2026 x64 Release (vcpkg)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "C:/workspace/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      },
+      "environment": {
+        "VCPKG_ROOT": "C:/workspace/vcpkg"
+      }
+    },
+    {
+      "name": "vs2026-x64-debug-vcpkg-questdb-metrics",
+      "displayName": "VS 2026 x64 Debug (vcpkg, QuestDB metrics)",
+      "inherits": "vs2026-x64-debug-vcpkg",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+        "WITH_QUESTDB_METRICS": "ON",
+        "WITH_DETAILED_METRICS": "ON"
+      }
+    },
+    {
+      "name": "vs2026-x64-release-vcpkg-questdb-metrics",
+      "displayName": "VS 2026 x64 Release (vcpkg, QuestDB metrics)",
+      "inherits": "vs2026-x64-release-vcpkg",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+        "WITH_QUESTDB_METRICS": "ON",
+        "WITH_DETAILED_METRICS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build-vs2026-x64-debug-vcpkg",
+      "displayName": "Build VS 2026 x64 Debug (vcpkg)",
+      "configurePreset": "vs2026-x64-debug-vcpkg",
+      "jobs": 2
+    },
+    {
+      "name": "build-vs2026-x64-release-vcpkg",
+      "displayName": "Build VS 2026 x64 Release (vcpkg)",
+      "configurePreset": "vs2026-x64-release-vcpkg",
+      "jobs": 2
+    },
+    {
+      "name": "build-vs2026-x64-debug-vcpkg-questdb-metrics",
+      "displayName": "Build VS 2026 x64 Debug (vcpkg, QuestDB metrics)",
+      "configurePreset": "vs2026-x64-debug-vcpkg-questdb-metrics",
+      "jobs": 2
+    },
+    {
+      "name": "build-vs2026-x64-release-vcpkg-questdb-metrics",
+      "displayName": "Build VS 2026 x64 Release (vcpkg, QuestDB metrics)",
+      "configurePreset": "vs2026-x64-release-vcpkg-questdb-metrics",
+      "jobs": 2
+    }
+  ]
+}

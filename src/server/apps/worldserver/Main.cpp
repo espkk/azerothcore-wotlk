@@ -293,11 +293,11 @@ int main(int argc, char** argv)
         METRIC_VALUE("db_queue_world", uint64(WorldDatabase.QueueSize()));
     });
 
-    METRIC_EVENT("events", "Worldserver started", "");
+    METRIC_EVENT("world_events", "Worldserver started");
 
     std::shared_ptr<void> sMetricHandle(nullptr, [](void*)
     {
-        METRIC_EVENT("events", "Worldserver shutdown", "");
+        METRIC_EVENT("world_events", "Worldserver shutdown");
         sMetric->Unload();
     });
 

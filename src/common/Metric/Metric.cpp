@@ -18,13 +18,73 @@
 #include "Metric.h"
 #include "Config.h"
 #include "Log.h"
+#include "MetricRecordQueue.h"
 #include "SteadyTimer.h"
 #include "Strand.h"
-#include "Tokenize.h"
-#include <boost/algorithm/string/replace.hpp>
-#include <boost/asio/ip/tcp.hpp>
+#include "backends/IMetricBackend.h"
+#include "backends/InfluxDBBackend.h"
+#include "backends/QuestDBBackend.h"
+#include <concepts>
+#include <type_traits>
+#include <utility>
 
-Metric::Metric()
+namespace
+{
+MetricRecord* TryAcquireRecord(MetricRecordQueue& queue, std::atomic<uint64>& droppedRecordCount, MetricRecordQueue::ProducerReservation& reservation)
+{
+    if (queue.TryAcquire(reservation))
+        return reservation.Record;
+
+    droppedRecordCount.fetch_add(1, std::memory_order_relaxed);
+    return nullptr;
+}
+
+void AddTags(MetricRecord& record, MetricTagList const& tags)
+{
+    for (MetricTag const& tag : tags)
+    {
+        if (!record.AddTag(tag))
+            return;
+    }
+}
+
+void AddFields(MetricRecord& record, MetricFieldList& fields)
+{
+    for (MetricField& field : fields)
+    {
+        if (!record.AddField(std::move(field)))
+            return;
+    }
+}
+
+void EnqueueRecord(MetricRecordQueue& queue, std::atomic<uint64>& droppedRecordCount, MetricTable table, MetricSymbol name, MetricFieldList& fields, MetricTagList const& tags)
+{
+    MetricRecordQueue::ProducerReservation reservation;
+    MetricRecord* record = TryAcquireRecord(queue, droppedRecordCount, reservation);
+    if (!record)
+        return;
+
+    record->Reset(table, name, std::chrono::system_clock::now());
+    AddTags(*record, tags);
+    AddFields(*record, fields);
+    queue.Commit(reservation);
+}
+
+void EnqueueEventRecord(MetricRecordQueue& queue, std::atomic<uint64>& droppedRecordCount, MetricSymbol table, MetricSymbol name, MetricFieldList& fields)
+{
+    MetricRecordQueue::ProducerReservation reservation;
+    MetricRecord* record = TryAcquireRecord(queue, droppedRecordCount, reservation);
+    if (!record)
+        return;
+
+    record->Reset(table, name, std::chrono::system_clock::now());
+    AddFields(*record, fields);
+    queue.Commit(reservation);
+}
+}
+
+Metric::Metric() :
+    _queuedRecords(std::make_unique<MetricRecordQueue>())
 {
 }
 
@@ -40,31 +100,11 @@ Metric* Metric::instance()
 
 void Metric::Initialize(std::string const& realmName, Acore::Asio::IoContext& ioContext, std::function<void()> overallStatusLogger)
 {
-    _dataStream = std::make_unique<boost::asio::ip::tcp::iostream>();
-    _realmName = FormatInfluxDBTagValue(realmName);
+    _realmName = realmName;
     _batchTimer = std::make_unique<boost::asio::steady_timer>(ioContext);
     _overallStatusTimer = std::make_unique<boost::asio::steady_timer>(ioContext);
     _overallStatusLogger = overallStatusLogger;
     LoadFromConfigs();
-}
-
-bool Metric::Connect()
-{
-    auto& stream = static_cast<boost::asio::ip::tcp::iostream&>(GetDataStream());
-    stream.connect(_hostname, _port);
-
-    auto error = stream.error();
-    if (error)
-    {
-        LOG_ERROR("metric", "Error connecting to '{}:{}', disabling Metric. Error message: {}",
-            _hostname, _port, error.message());
-
-        _enabled = false;
-        return false;
-    }
-
-    stream.clear();
-    return true;
 }
 
 void Metric::LoadFromConfigs()
@@ -72,6 +112,7 @@ void Metric::LoadFromConfigs()
     bool previousValue = _enabled;
     _enabled = sConfigMgr->GetOption<bool>("Metric.Enable", false);
     _updateInterval = sConfigMgr->GetOption<int32>("Metric.Interval", 1);
+    uint32 configuredQueueCapacity = sConfigMgr->GetOption<uint32>("Metric.QueueCapacity", 4096);
 
     if (_updateInterval < 1)
     {
@@ -86,6 +127,20 @@ void Metric::LoadFromConfigs()
         _overallStatusTimerInterval = 1;
     }
 
+    if (configuredQueueCapacity < 1)
+    {
+        LOG_ERROR("metric", "'Metric.QueueCapacity' config set to {}, overriding to 1.", configuredQueueCapacity);
+        configuredQueueCapacity = 1;
+    }
+
+    if (!previousValue || !_queuedRecords->Capacity())
+        _queuedRecords->Reset(configuredQueueCapacity);
+    else if (_queuedRecords->Capacity() != configuredQueueCapacity)
+        LOG_WARN("metric", "'Metric.QueueCapacity' changed to {}, keeping current capacity {} until metrics are restarted.",
+            configuredQueueCapacity, _queuedRecords->Capacity());
+
+    _queueCapacity = uint32(_queuedRecords->Capacity());
+
     _thresholds.clear();
     std::vector<std::string> thresholdSettings = sConfigMgr->GetKeysByString("Metric.Threshold.");
     for (std::string const& thresholdSetting : thresholdSettings)
@@ -99,49 +154,21 @@ void Metric::LoadFromConfigs()
     // Cancel any scheduled operation if the config changed from Enabled to Disabled.
     if (_enabled && !previousValue)
     {
-        std::string connectionInfo = sConfigMgr->GetOption<std::string>("Metric.InfluxDB.Connection", "");
-        if (connectionInfo.empty())
+#if defined WITH_QUESTDB_METRICS
+        _backend = std::make_unique<QuestDBBackend>(_realmName);
+        LOG_INFO("metric", "Metric backend: QuestDB");
+#else
+        _backend = std::make_unique<InfluxDBBackend>(_realmName);
+        LOG_INFO("metric", "Metric backend: InfluxDB");
+#endif
+
+        if (!_backend->LoadFromConfig())
         {
-            LOG_ERROR("metric", "Metric.InfluxDB.Connection not specified in configuration file.");
+            _enabled = false;
+            _backend.reset();
             return;
         }
 
-        std::vector<std::string_view> tokens = Acore::Tokenize(connectionInfo, ';', true);
-        _useV2 = sConfigMgr->GetOption<bool>("Metric.InfluxDB.v2", false);
-        if (_useV2)
-        {
-            if (tokens.size() != 2)
-            {
-                LOG_ERROR("metric", "Metric.InfluxDB.Connection specified with wrong format in configuration file. (hostname;port)");
-                return;
-            }
-
-            _hostname.assign(tokens[0]);
-            _port.assign(tokens[1]);
-            _org = sConfigMgr->GetOption<std::string>("Metric.InfluxDB.Org", "");
-            _bucket = sConfigMgr->GetOption<std::string>("Metric.InfluxDB.Bucket", "");
-            _token = sConfigMgr->GetOption<std::string>("Metric.InfluxDB.Token", "");
-
-            if (_org.empty() || _bucket.empty() || _token.empty())
-            {
-                LOG_ERROR("metric", "InfluxDB v2 parameters missing: org, bucket, or token.");
-                return;
-            }
-        }
-        else
-        {
-            if (tokens.size() != 3)
-            {
-                LOG_ERROR("metric", "Metric.InfluxDB.Connection specified with wrong format in configuration file. (hostname;port;database)");
-                return;
-            }
-
-            _hostname.assign(tokens[0]);
-            _port.assign(tokens[1]);
-            _databaseName.assign(tokens[2]);
-        }
-
-        Connect();
         ScheduleSend();
         ScheduleOverallStatusLog();
     }
@@ -156,9 +183,9 @@ void Metric::Update()
     }
 }
 
-bool Metric::ShouldLog(std::string const& category, int64 value) const
+bool Metric::ShouldLog(MetricSymbol name, int64 value) const
 {
-    auto threshold = _thresholds.find(category);
+    auto threshold = _thresholds.find(std::string(name));
 
     if (threshold == _thresholds.end())
     {
@@ -168,111 +195,70 @@ bool Metric::ShouldLog(std::string const& category, int64 value) const
     return value >= threshold->second;
 }
 
-void Metric::LogEvent(std::string const& category, std::string const& title, std::string const& description)
+void Metric::LogMetricRecord(MetricSymbol name, MetricFieldList fields, MetricTagList const& tags)
 {
-    using namespace std::chrono;
+    EnqueueRecord(*_queuedRecords, _droppedRecordCount, MetricTable::Metrics, name, fields, tags);
+}
 
-    MetricData* data = new MetricData;
-    data->Category = category;
-    data->Timestamp = system_clock::now();
-    data->Type = METRIC_DATA_EVENT;
-    data->Title = title;
-    data->Text = description;
+void Metric::LogPerfRecord(MetricSymbol name, MetricFieldList fields, MetricTagList const& tags)
+{
+    EnqueueRecord(*_queuedRecords, _droppedRecordCount, MetricTable::Perf, name, fields, tags);
+}
 
-    _queuedData.Enqueue(data);
+void Metric::LogMetric(MetricSymbol name, MetricFieldList fields, MetricTagList const& tags)
+{
+    LogMetricRecord(name, std::move(fields), tags);
+}
+
+void Metric::LogEvent(MetricSymbol table, MetricSymbol name)
+{
+    MetricFieldList fields{ MetricField{ "count", int64(1) } };
+    LogEvent(table, name, std::move(fields));
+}
+
+void Metric::LogEvent(MetricSymbol table, MetricSymbol name, MetricFieldList fields)
+{
+    EnqueueEventRecord(*_queuedRecords, _droppedRecordCount, table, name, fields);
 }
 
 void Metric::SendBatch()
 {
-    using namespace std::chrono;
+    MetricBatch batch;
+    std::vector<MetricRecordQueue::ConsumerReservation> reservations;
+    MetricRecordQueue::ConsumerReservation reservation;
 
-    std::stringstream batchedData;
-    MetricData* data;
-    bool firstLoop = true;
-
-    while (_queuedData.Dequeue(data))
+    while (_queuedRecords->TryDequeue(reservation))
     {
-        if (!firstLoop)
-            batchedData << "\n";
+        reservations.push_back(reservation);
+        batch.push_back(reservation.Record);
+    }
 
-        batchedData << data->Category;
-        if (!_realmName.empty())
-            batchedData << ",realm=" << _realmName;
-
-        for (MetricTag const& tag : data->Tags)
-            batchedData << "," << tag.first << "=" << FormatInfluxDBTagValue(tag.second);
-
-        batchedData << " ";
-
-        switch (data->Type)
-        {
-            case METRIC_DATA_VALUE:
-                batchedData << "value=" << data->Value;
-                break;
-            case METRIC_DATA_EVENT:
-                batchedData << "title=\"" << data->Title << "\",text=\"" << data->Text << "\"";
-                break;
-        }
-
-        batchedData << " " << std::to_string(duration_cast<nanoseconds>(data->Timestamp.time_since_epoch()).count());
-
-        firstLoop = false;
-        delete data;
+    uint64 droppedRecordCount = _droppedRecordCount.exchange(0, std::memory_order_acq_rel);
+    if (droppedRecordCount)
+    {
+        LOG_WARN("metric", "Dropped {} metric samples because the queue reached Metric.QueueCapacity ({}).",
+            droppedRecordCount, _queueCapacity);
     }
 
     // Check if there's any data to send
-    if (batchedData.tellp() == std::streampos(0))
+    if (batch.empty())
     {
         ScheduleSend();
         return;
     }
 
-    if (!GetDataStream().good() && !Connect())
+    if (!_backend->SendBatch(batch))
+    {
+        for (MetricRecordQueue::ConsumerReservation const& queuedRecord : reservations)
+            _queuedRecords->Release(queuedRecord);
+
+        _enabled = false;
+        _backend.reset();
         return;
-
-    if (_useV2)
-    {
-        GetDataStream() << "POST " << "/api/v2/write?bucket=" << _bucket
-                        << "&org=" << _org << "&precision=ns HTTP/1.1\r\n";
-        GetDataStream() << "Host: " << _hostname << ":" << _port << "\r\n";
-        GetDataStream() << "Authorization: Token " << _token << "\r\n";
-    }
-    else
-    {
-        GetDataStream() << "POST " << "/write?db=" << _databaseName << " HTTP/1.1\r\n";
-        GetDataStream() << "Host: " << _hostname << ":" << _port << "\r\n";
-    }
-    GetDataStream() << "Accept: */*\r\n";
-    GetDataStream() << "Content-Type: application/octet-stream\r\n";
-    GetDataStream() << "Content-Transfer-Encoding: binary\r\n";
-
-    GetDataStream() << "Content-Length: " << std::to_string(batchedData.tellp()) << "\r\n\r\n";
-    GetDataStream() << batchedData.rdbuf();
-
-    std::string http_version;
-    GetDataStream() >> http_version;
-    unsigned int status_code = 0;
-    GetDataStream() >> status_code;
-
-    if (status_code != 204)
-    {
-        LOG_ERROR("metric", "Error sending data, returned HTTP code: {}", status_code);
     }
 
-    // Read and ignore the status description
-    std::string status_description;
-    std::getline(GetDataStream(), status_description);
-
-    // Read headers
-    std::string header;
-
-    while (std::getline(GetDataStream(), header) && header != "\r")
-    {
-        if (header == "Connection: close\r")
-        {
-            static_cast<boost::asio::ip::tcp::iostream&>(GetDataStream()).close();
-        }
-    }
+    for (MetricRecordQueue::ConsumerReservation const& queuedRecord : reservations)
+        _queuedRecords->Release(queuedRecord);
 
     ScheduleSend();
 }
@@ -286,14 +272,14 @@ void Metric::ScheduleSend()
     }
     else
     {
-        static_cast<boost::asio::ip::tcp::iostream&>(GetDataStream()).close();
-        MetricData* data;
+        if (_backend)
+            _backend.reset();
+
+        MetricRecordQueue::ConsumerReservation reservation;
 
         // Clear the queue
-        while (_queuedData.Dequeue(data))
-        {
-            delete data;
-        }
+        while (_queuedRecords->TryDequeue(reservation))
+            _queuedRecords->Release(reservation);
     }
 }
 
@@ -322,54 +308,3 @@ void Metric::ScheduleOverallStatusLog()
         });
     }
 }
-
-std::string Metric::FormatInfluxDBValue(bool value)
-{
-    return value ? "t" : "f";
-}
-
-template<class T>
-std::string Metric::FormatInfluxDBValue(T value)
-{
-    return std::to_string(value) + 'i';
-}
-
-std::string Metric::FormatInfluxDBValue(std::string const& value)
-{
-    return '"' + boost::replace_all_copy(value, "\"", "\\\"") + '"';
-}
-
-std::string Metric::FormatInfluxDBValue(char const* value)
-{
-    return FormatInfluxDBValue(std::string(value));
-}
-
-std::string Metric::FormatInfluxDBValue(double value)
-{
-    return std::to_string(value);
-}
-
-std::string Metric::FormatInfluxDBValue(float value)
-{
-    return FormatInfluxDBValue(double(value));
-}
-
-std::string Metric::FormatInfluxDBTagValue(std::string const& value)
-{
-    /// @todo: should handle '=' and ',' characters too
-    return boost::replace_all_copy(value, " ", "\\ ");
-}
-
-std::string Metric::FormatInfluxDBValue(std::chrono::nanoseconds value)
-{
-    return FormatInfluxDBValue(std::chrono::duration_cast<Milliseconds>(value).count());
-}
-
-template AC_COMMON_API std::string Metric::FormatInfluxDBValue(int8);
-template AC_COMMON_API std::string Metric::FormatInfluxDBValue(uint8);
-template AC_COMMON_API std::string Metric::FormatInfluxDBValue(int16);
-template AC_COMMON_API std::string Metric::FormatInfluxDBValue(uint16);
-template AC_COMMON_API std::string Metric::FormatInfluxDBValue(int32);
-template AC_COMMON_API std::string Metric::FormatInfluxDBValue(uint32);
-template AC_COMMON_API std::string Metric::FormatInfluxDBValue(int64);
-template AC_COMMON_API std::string Metric::FormatInfluxDBValue(uint64);

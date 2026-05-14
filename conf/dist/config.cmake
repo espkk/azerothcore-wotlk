@@ -105,6 +105,7 @@ option(ENABLE_VMAP_CHECKS  "Enable Checks relative to DisableMgr system on vmap"
 option(WITH_DYNAMIC_LINKING "Enable dynamic library linking."                            0)
 option(WITH_STRICT_DATABASE_TYPE_CHECKS "Enable strict checking of database field value accessors" 0)
 option(WITHOUT_METRICS     "Disable metrics reporting (i.e. InfluxDB and Grafana)"       0)
+option(WITH_QUESTDB_METRICS "Use QuestDB instead of InfluxDB for metrics reporting"      0)
 option(WITH_DETAILED_METRICS  "Enable detailed metrics reporting (i.e. time each session takes to update)" 0)
 option(TOOL_CONFIG_MERGER     "Install the Python config merger tool alongside config files" 0)
 

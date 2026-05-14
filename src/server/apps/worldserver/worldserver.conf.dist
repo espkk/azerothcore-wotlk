@@ -847,7 +847,7 @@ Log.Async.Enable = 0
 ###################################################################################################
 # METRIC
 #
-# These settings control the statistics sent to the metric database (currently InfluxDB)
+# These settings control the statistics sent to the metric database.
 #
 #    Metric.Enable
 #        Description: Enables statistics sent to the metric database.
@@ -858,8 +858,21 @@ Log.Async.Enable = 0
 Metric.Enable = 0
 
 #
+#    Metric.QueueCapacity
+#        Description: Maximum number of metric samples buffered before new
+#                     samples are dropped. Metrics are diagnostic data; this
+#                     bound prevents a slow or unavailable backend from growing
+#                     worldserver memory without limit.
+#        Default:     4096
+#
+
+Metric.QueueCapacity = 4096
+
+#
 #    Metric.InfluxDB
 #        Description: Connection settings for InfluxDB.
+#                     This is the default metrics backend. Build with
+#                     WITH_QUESTDB_METRICS to use Metric.QuestDB.* instead.
 #
 #        For InfluxDB v1:
 #                     Only fill in Metric.InfluxDB.Connection.
@@ -887,6 +900,31 @@ Metric.InfluxDB.v2 = 0
 Metric.InfluxDB.Org = ""
 Metric.InfluxDB.Bucket = ""
 Metric.InfluxDB.Token = ""
+
+#
+#    Metric.QuestDB
+#        Description: Connection settings for the QuestDB backend
+#                     (build with WITH_QUESTDB_METRICS). The backend writes
+#                     InfluxDB Line Protocol directly over HTTP. Metrics
+#                     include the current realm as a tag/symbol so multiple
+#                     realms can share one database.
+#
+#        NOTE:        QuestDB must allow ILP table/column auto-creation, or
+#                     the metric tables must be created ahead of time.
+#
+#        Format:      Metric.QuestDB.Connection = "hostname;port"
+#
+#        Authentication is optional and only one form is used at a time
+#        (Token takes precedence over User/Password):
+#                     Metric.QuestDB.Token    = "<rest auth token>"
+#                     Metric.QuestDB.User     = "<basic auth user>"
+#                     Metric.QuestDB.Password = "<basic auth password>"
+#
+
+Metric.QuestDB.Connection = "127.0.0.1;9000"
+Metric.QuestDB.Token = ""
+Metric.QuestDB.User = ""
+Metric.QuestDB.Password = ""
 
 #
 #    Metric.Interval

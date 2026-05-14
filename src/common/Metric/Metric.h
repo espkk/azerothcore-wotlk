@@ -20,84 +20,47 @@
 
 #include "Define.h"
 #include "Duration.h"
-#include "MPSCQueue.h"
+#include "MetricTypes.h"
 #include <boost/asio/steady_timer.hpp>
+#include <atomic>
 #include <functional>
-#include <memory> // NOTE: this import is NEEDED (even though some IDEs report it as unused)
+#include <initializer_list>
+#include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
+
+class IMetricBackend;
+class MetricRecordQueue;
 
 namespace Acore::Asio
 {
     class IoContext;
 }
 
-enum MetricDataType
-{
-    METRIC_DATA_VALUE,
-    METRIC_DATA_EVENT
-};
-
-typedef std::pair<std::string, std::string> MetricTag;
-
-struct MetricData
-{
-    std::string Category;
-    SystemTimePoint Timestamp;
-    MetricDataType Type;
-    std::vector<MetricTag> Tags;
-
-    // LogValue-specific fields
-    std::string Value;
-
-    // LogEvent-specific fields
-    std::string Title;
-    std::string Text;
-};
-
 class AC_COMMON_API Metric
 {
 private:
-    std::iostream& GetDataStream() { return *_dataStream; }
-    std::unique_ptr<std::iostream> _dataStream;
-    MPSCQueue<MetricData> _queuedData;
+    std::unique_ptr<MetricRecordQueue> _queuedRecords;
+    std::atomic<uint64> _droppedRecordCount = 0;
     std::unique_ptr<boost::asio::steady_timer> _batchTimer;
     std::unique_ptr<boost::asio::steady_timer> _overallStatusTimer;
     int32 _updateInterval = 0;
     int32 _overallStatusTimerInterval = 0;
+    uint32 _queueCapacity = 0;
     bool _enabled = false;
     bool _overallStatusTimerTriggered = false;
-    std::string _hostname;
-    std::string _port;
-    std::string _databaseName;
-    bool _useV2 = false;
-    std::string _org;
-    std::string _bucket;
-    std::string _token;
+    std::unique_ptr<IMetricBackend> _backend;
     std::function<void()> _overallStatusLogger;
     std::string _realmName;
     std::unordered_map<std::string, int64> _thresholds;
 
-    bool Connect();
     void SendBatch();
     void ScheduleSend();
     void ScheduleOverallStatusLog();
-
-    static std::string FormatInfluxDBValue(bool value);
-
-    template <class T>
-    static std::string FormatInfluxDBValue(T value);
-
-    static std::string FormatInfluxDBValue(std::string const& value);
-    static std::string FormatInfluxDBValue(char const* value);
-    static std::string FormatInfluxDBValue(double value);
-    static std::string FormatInfluxDBValue(float value);
-    static std::string FormatInfluxDBValue(std::chrono::nanoseconds value);
-
-    static std::string FormatInfluxDBTagValue(std::string const& value);
-
-    /// @todo: should format TagKey and FieldKey too in the same way as TagValue
+    void LogMetricRecord(MetricSymbol name, MetricFieldList fields, MetricTagList const& tags);
+    void LogPerfRecord(MetricSymbol name, MetricFieldList fields, MetricTagList const& tags);
 
 public:
     Metric();
@@ -108,24 +71,24 @@ public:
     void Initialize(std::string const& realmName, Acore::Asio::IoContext& ioContext, std::function<void()> overallStatusLogger);
     void LoadFromConfigs();
     void Update();
-    bool ShouldLog(std::string const& category, int64 value) const;
+    bool ShouldLog(MetricSymbol name, int64 value) const;
 
-    template<class T>
-    void LogValue(std::string const& category, T value, std::vector<MetricTag> tags)
+    void LogMetric(MetricSymbol name, MetricFieldList fields, MetricTagList const& tags = {});
+
+    template<MetricSerializableValue T>
+    void LogValue(MetricSymbol name, T&& value, MetricTagList const& tags = {})
     {
-        using namespace std::chrono;
-
-        MetricData* data = new MetricData;
-        data->Category = category;
-        data->Timestamp = system_clock::now();
-        data->Type = METRIC_DATA_VALUE;
-        data->Value = FormatInfluxDBValue(value);
-        data->Tags = std::move(tags);
-
-        _queuedData.Enqueue(data);
+        LogMetric(name, MetricFieldList{ MetricField{ "value", std::forward<T>(value) } }, tags);
     }
 
-    void LogEvent(std::string const& category, std::string const& title, std::string const& description);
+    template<MetricSerializableValue T>
+    void LogPerf(MetricSymbol name, T&& duration, MetricTagList const& tags = {})
+    {
+        LogPerfRecord(name, MetricFieldList{ MetricField{ "duration_ms", std::forward<T>(duration) } }, tags);
+    }
+
+    void LogEvent(MetricSymbol table, MetricSymbol name);
+    void LogEvent(MetricSymbol table, MetricSymbol name, MetricFieldList fields);
 
     void Unload();
     bool IsEnabled() const { return _enabled; }
@@ -160,68 +123,67 @@ MetricStopWatch<LoggerType> MakeMetricStopWatch(LoggerType&& loggerFunc)
     return { std::forward<LoggerType>(loggerFunc) };
 }
 
-#define METRIC_TAG(name, value) { name, value }
+#define METRIC_TAG(name, value) MetricTag{ name, value }
+#define METRIC_TAGS(...) MetricTagList{ __VA_ARGS__ }
+#define METRIC_FIELD(name, value) MetricField{ name, value }
+#define METRIC_FIELDS(...) MetricFieldList{ __VA_ARGS__ }
 
 #define METRIC_DO_CONCAT(a, b) a##b
 #define METRIC_CONCAT(a, b) METRIC_DO_CONCAT(a, b)
 #define METRIC_UNIQUE_NAME(name) METRIC_CONCAT(name, __LINE__)
 
 #if defined PERFORMANCE_PROFILING || defined WITHOUT_METRICS
-#define METRIC_EVENT(category, title, description) ((void)0)
-#define METRIC_VALUE(category, value, ...) ((void)0)
-#define METRIC_TIMER(category, ...) ((void)0)
-#define METRIC_DETAILED_EVENT(category, title, description) ((void)0)
-#define METRIC_DETAILED_TIMER(category, ...) ((void)0)
-#define METRIC_DETAILED_NO_THRESHOLD_TIMER(category, ...) ((void)0)
+#define METRIC_EVENT(table, name) ((void)0)
+#define METRIC_EVENT_VALUES(table, name, fields) ((void)0)
+#define METRIC_VALUES(name, fields, tags) ((void)0)
+#define METRIC_VALUE(name, value, ...) ((void)0)
+#define METRIC_TIMER(name, ...) ((void)0)
+#define METRIC_DETAILED_EVENT(table, name) ((void)0)
+#define METRIC_DETAILED_EVENT_VALUES(table, name, fields) ((void)0)
+#define METRIC_DETAILED_TIMER(name, ...) ((void)0)
+#define METRIC_DETAILED_NO_THRESHOLD_TIMER(name, ...) ((void)0)
 #else
-#if AC_PLATFORM != AC_PLATFORM_WINDOWS
-#define METRIC_EVENT(category, title, description)                  \
-        do {                                                           \
-            if (sMetric->IsEnabled())                                  \
-                sMetric->LogEvent(category, title, description);       \
-        } while (0)
-#define METRIC_VALUE(category, value, ...)                          \
-        do {                                                           \
-            if (sMetric->IsEnabled())                                  \
-                sMetric->LogValue(category, value, { __VA_ARGS__ });   \
-        } while (0)
-#else
-#define METRIC_EVENT(category, title, description)                  \
-        __pragma(warning(push))                                        \
-        __pragma(warning(disable:4127))                                \
-        do {                                                           \
-            if (sMetric->IsEnabled())                                  \
-                sMetric->LogEvent(category, title, description);       \
-        } while (0)                                                    \
-        __pragma(warning(pop))
-#define METRIC_VALUE(category, value, ...)                          \
-        __pragma(warning(push))                                        \
-        __pragma(warning(disable:4127))                                \
-        do {                                                           \
-            if (sMetric->IsEnabled())                                  \
-                sMetric->LogValue(category, value, { __VA_ARGS__ });   \
-        } while (0)                                                    \
-        __pragma(warning(pop))
-#endif
-#define METRIC_TIMER(category, ...)                                                                           \
+#define METRIC_EVENT(table, name)                                   \
+        if (sMetric->IsEnabled())                                      \
+            sMetric->LogEvent(table, name);                            \
+        else                                                           \
+            (void)0
+#define METRIC_EVENT_VALUES(table, name, fields)                    \
+        if (sMetric->IsEnabled())                                      \
+            sMetric->LogEvent(table, name, fields);                    \
+        else                                                           \
+            (void)0
+#define METRIC_VALUES(name, fields, tags)                           \
+        if (sMetric->IsEnabled())                                      \
+            sMetric->LogMetric(name, fields, tags);                    \
+        else                                                           \
+            (void)0
+#define METRIC_VALUE(name, value, ...)                              \
+        if (sMetric->IsEnabled())                                      \
+            sMetric->LogValue(name, value, METRIC_TAGS(__VA_ARGS__));  \
+        else                                                           \
+            (void)0
+#define METRIC_TIMER(name, ...)                                                                               \
         MetricStopWatch METRIC_UNIQUE_NAME(__ac_metric_stop_watch) = MakeMetricStopWatch([&](TimePoint start) \
         {                                                                                                        \
-            sMetric->LogValue(category, std::chrono::steady_clock::now() - start, { __VA_ARGS__ });              \
+            sMetric->LogPerf(name, std::chrono::steady_clock::now() - start, METRIC_TAGS(__VA_ARGS__));         \
         });
 #if defined WITH_DETAILED_METRICS
-#define METRIC_DETAILED_TIMER(category, ...)                                                                  \
+#define METRIC_DETAILED_TIMER(name, ...)                                                                      \
         MetricStopWatch METRIC_UNIQUE_NAME(__ac_metric_stop_watch) = MakeMetricStopWatch([&](TimePoint start) \
         {                                                                                                        \
             int64 duration = int64(std::chrono::duration_cast<Milliseconds>(std::chrono::steady_clock::now() - start).count()); \
-            if (sMetric->ShouldLog(category, duration))                                                          \
-                sMetric->LogValue(category, duration, { __VA_ARGS__ });                                          \
+            if (sMetric->ShouldLog(name, duration))                                                              \
+                sMetric->LogPerf(name, duration, METRIC_TAGS(__VA_ARGS__));                                      \
         });
-#define METRIC_DETAILED_NO_THRESHOLD_TIMER(category, ...) METRIC_TIMER(category, __VA_ARGS__)
-#define METRIC_DETAILED_EVENT(category, title, description) METRIC_EVENT(category, title, description)
+#define METRIC_DETAILED_NO_THRESHOLD_TIMER(name, ...) METRIC_TIMER(name, __VA_ARGS__)
+#define METRIC_DETAILED_EVENT(table, name) METRIC_EVENT(table, name)
+#define METRIC_DETAILED_EVENT_VALUES(table, name, fields) METRIC_EVENT_VALUES(table, name, fields)
 #else
-#define METRIC_DETAILED_EVENT(category, title, description) ((void)0)
-#define METRIC_DETAILED_TIMER(category, ...) ((void)0)
-#define METRIC_DETAILED_NO_THRESHOLD_TIMER(category, ...) ((void)0)
+#define METRIC_DETAILED_EVENT(table, name) ((void)0)
+#define METRIC_DETAILED_EVENT_VALUES(table, name, fields) ((void)0)
+#define METRIC_DETAILED_TIMER(name, ...) ((void)0)
+#define METRIC_DETAILED_NO_THRESHOLD_TIMER(name, ...) ((void)0)
 #endif
 
 #endif
