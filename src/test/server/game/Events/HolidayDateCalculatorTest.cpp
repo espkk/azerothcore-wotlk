@@ -52,6 +52,54 @@ protected:
     {
         return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
     }
+
+    int DaysInMonth(int year, int month)
+    {
+        int daysInMonth[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+        if (month == 2 && IsLeapYear(year))
+            return 29;
+
+        return daysInMonth[month];
+    }
+
+    std::tm AddDays(std::tm date, int days)
+    {
+        int year = date.tm_year + 1900;
+        int month = date.tm_mon + 1;
+        int day = date.tm_mday + days;
+
+        while (day > DaysInMonth(year, month))
+        {
+            day -= DaysInMonth(year, month);
+            ++month;
+            if (month > 12)
+            {
+                month = 1;
+                ++year;
+            }
+        }
+
+        while (day < 1)
+        {
+            --month;
+            if (month < 1)
+            {
+                month = 12;
+                --year;
+            }
+
+            day += DaysInMonth(year, month);
+        }
+
+        date.tm_year = year - 1900;
+        date.tm_mon = month - 1;
+        date.tm_mday = day;
+        date.tm_wday = (date.tm_wday + days) % 7;
+        if (date.tm_wday < 0)
+            date.tm_wday += 7;
+
+        return date;
+    }
 };
 
 // ============================================================
@@ -309,9 +357,7 @@ TEST_F(HolidayDateCalculatorTest, Noblegarden_DayAfterEaster_1900_2200)
         std::tm easter = HolidayDateCalculator::CalculateEasterSunday(year);
 
         // Calculate expected Noblegarden date (Easter + 1)
-        std::tm expectedNoblegarden = easter;
-        expectedNoblegarden.tm_mday += 1;
-        mktime(&expectedNoblegarden); // Normalize (handles month rollover)
+        std::tm expectedNoblegarden = AddDays(easter, 1);
 
         // Get calculated Noblegarden from holiday rule
         HolidayRule noblegarden = { 181, HolidayCalculationType::EASTER_OFFSET, 0, 0, 0, 1 };
@@ -341,9 +387,7 @@ TEST_F(HolidayDateCalculatorTest, PilgrimsBounty_SundayBeforeThanksgiving_1900_2
         std::tm thanksgiving = HolidayDateCalculator::CalculateNthWeekday(year, 11, Weekday::THURSDAY, 4);
 
         // Pilgrim's Bounty starts on Sunday before (4 days earlier)
-        std::tm expectedPilgrims = thanksgiving;
-        expectedPilgrims.tm_mday -= 4;
-        mktime(&expectedPilgrims);
+        std::tm expectedPilgrims = AddDays(thanksgiving, -4);
 
         // Get calculated date using rule with -4 offset
         HolidayRule pilgrimsBounty = { 404, HolidayCalculationType::NTH_WEEKDAY, 11, 4, static_cast<int>(Weekday::THURSDAY), -4 };
