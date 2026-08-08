@@ -70,6 +70,12 @@ public:
     BattlegroundQueue();
     ~BattlegroundQueue();
 
+    // The queue owns every GroupQueueInfo and every queued event by raw pointer,
+    // so a copy would double free them. `auto q = mgr->GetBattlegroundQueue(...)`
+    // silently made one until this was deleted.
+    BattlegroundQueue(BattlegroundQueue const&) = delete;
+    BattlegroundQueue& operator=(BattlegroundQueue const&) = delete;
+
     void BattlegroundQueueUpdate(uint32 diff, BattlegroundTypeId bgTypeId, BattlegroundBracketId bracket_id, uint8 arenaType, bool isRated, uint32 arenaRating);
     void BattlegroundQueueAnnouncerUpdate(uint32 diff, BattlegroundQueueTypeId bgQueueTypeId, BattlegroundBracketId bracket_id);
     void UpdateEvents(uint32 diff);

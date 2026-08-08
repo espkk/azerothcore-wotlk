@@ -153,9 +153,19 @@ void ArenaSeasonMgr::DeleteArenaTeams()
     std::vector<BattlegroundQueueTypeId> arenasQueueTypes = {BATTLEGROUND_QUEUE_2v2, BATTLEGROUND_QUEUE_3v3, BATTLEGROUND_QUEUE_5v5};
     for (BattlegroundQueueTypeId queueType : arenasQueueTypes)
     {
-        auto queue = sBattlegroundMgr->GetBattlegroundQueue(queueType);
-        for (auto const& [playerGUID, other] : queue.m_QueuedPlayers)
-            queue.RemovePlayer(playerGUID, true);
+        BattlegroundQueue& queue = sBattlegroundMgr->GetBattlegroundQueue(queueType);
+
+        // Snapshot first: RemovePlayer erases from m_QueuedPlayers, and it can
+        // remove more than the one player when a rated group is dissolved.
+        std::vector<ObjectGuid> queuedPlayers;
+        queuedPlayers.reserve(queue.m_QueuedPlayers.size());
+
+        for (auto const& [playerGUID, groupInfo] : queue.m_QueuedPlayers)
+            queuedPlayers.push_back(playerGUID);
+
+        for (ObjectGuid const& playerGUID : queuedPlayers)
+            if (queue.m_QueuedPlayers.find(playerGUID) != queue.m_QueuedPlayers.end())
+                queue.RemovePlayer(playerGUID, true);
     }
 
     sArenaTeamMgr->DeleteAllArenaTeams();
