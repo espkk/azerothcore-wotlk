@@ -16,12 +16,39 @@
  */
 
 #include "MapUpdater.h"
+#include "AreaDefines.h"
 #include "DatabaseEnv.h"
 #include "LFGMgr.h"
 #include "Log.h"
 #include "Map.h"
 #include "MapMgr.h"
 #include "Metric.h"
+#include "Observability.h"
+
+namespace
+{
+    struct MapUpdaterMetrics
+    {
+        Acore::Observability::HistogramFamily UpdateDuration
+        {
+            "ac_map_update_duration_seconds",
+            "Duration of map updates by map id.",
+            Acore::Observability::DefaultDurationBuckets(),
+            MAP_ID_METRIC_COUNT
+        };
+    };
+
+    MapUpdaterMetrics Metrics;
+
+    Acore::Observability::ScopedHistogramTimer MeasureMapUpdate(uint32 mapId)
+    {
+        // Custom DBC maps above MAX_MAP_ID have no indexed slot
+        if (mapId >= MAP_ID_METRIC_COUNT)
+            return {};
+
+        return Metrics.UpdateDuration.MeasureIndexed(mapId, "map_id", mapId);
+    }
+}
 
 class UpdateRequest
 {
@@ -43,7 +70,10 @@ public:
     void call() override
     {
         METRIC_TIMER("map_update_time_diff", METRIC_TAG("map_id", std::to_string(m_map.GetId())));
-        m_map.Update(m_diff, s_diff);
+        {
+            Acore::Observability::ScopedHistogramTimer observabilityTimer = MeasureMapUpdate(m_map.GetId());
+            m_map.Update(m_diff, s_diff);
+        }
         m_updater.update_finished();
     }
 
