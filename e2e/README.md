@@ -10,8 +10,8 @@ Authoring rules for the existing suite live in the harness:
 
 | Doc | Audience |
 |-----|----------|
-| [LLM_GUIDE.md](https://github.com/azerothcore/AzerothGhost/blob/v1.0.8/e2e/LLM_GUIDE.md) | Compact MUST/NEVER + APIs |
-| [EXAMPLES.md](https://github.com/azerothcore/AzerothGhost/blob/v1.0.8/e2e/EXAMPLES.md) | Full recipes and skeletons |
+| [LLM_GUIDE.md](https://github.com/azerothcore/AzerothGhost/blob/v1.0.9/e2e/LLM_GUIDE.md) | Compact MUST/NEVER + APIs |
+| [EXAMPLES.md](https://github.com/azerothcore/AzerothGhost/blob/v1.0.9/e2e/EXAMPLES.md) | Full recipes and skeletons |
 | `.agents/docs/e2e-policy.md` | Do not add e2e unless asked; suite conventions |
 
 ---
@@ -42,7 +42,7 @@ cp go.work.example go.work   # gitignored; edit the replace path
 # replace github.com/azerothcore/AzerothGhost => /path/to/AzerothGhost
 ```
 
-`e2e/go.mod` pins `github.com/azerothcore/AzerothGhost v1.0.8` (see `go.sum`).
+`e2e/go.mod` pins `github.com/azerothcore/AzerothGhost v1.0.9` (see `go.sum`).
 `go test` / `go mod download` fetch that module.
 
 ---
@@ -57,6 +57,7 @@ Copy and adjust [`e2e/.env.example`](./.env.example). Stock AC and CI use `acore
 | `E2E_AUTH_DSN` | `acore:acore@tcp(127.0.0.1:3306)/acore_auth` | Auth DB |
 | `E2E_CHAR_DSN` | `acore:acore@tcp(127.0.0.1:3306)/acore_characters` | Characters DB |
 | `E2E_WORLD_DSN` | `acore:acore@tcp(127.0.0.1:3306)/acore_world` | World DB (spawns, tele names, cleanup) |
+| `AC_ARENA_MAX_RATING_DIFFERENCE` | `150` (the dist value) | `Arena.MaxRatingDifference` that `pvp/arena` assumes. Only for a realm launched with another value: set the same value on worldserver |
 
 Optional filters (`internal/meta`):
 
@@ -161,6 +162,7 @@ go test -tags=e2e ./local/... -count=1 -v -timeout 30m -parallel 1
 | items/equip | visible-item slot after EquipEntry; additem; survives relog | P2 | covered | — |
 | protocol/session | pos; item/quest load; money save/relog | P1 | covered; GM vis persist `blocked-harness` (extra_flags after relog) | #25793 |
 | protocol/teleport | cross-map; named; GoCreatureID | P1 | covered | — |
+| pvp/arena | rated 2v2 queue pops for both teams; a started pair is never wider than Arena.MaxRatingDifference | P2 | covered (`TestArena_*`, `TestAC_27548_*`); wants an exclusive realm (arena season, Arena Battlemaster event and rating config are realm-global) | #27548 |
 | guild/charter_bank | charter buy+turn-in | P2 | covered | — |
 | instances/bind_reset | party tele; ritual summon | P2 | covered; post-reset summon `blocked-harness` (AcceptSummon after reset) | #10708 |
 | instances/classic/stratholme | Timmy remains hidden while a relevant Square Scarlet lives, then emerges after the area is clear | P2 | covered (`TestAC_26363_TimmyEmergesAfterSquareCleared`) | #26363 |
